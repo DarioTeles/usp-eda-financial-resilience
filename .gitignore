@@ -1,0 +1,38 @@
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Logs
+*/logs/*
+!*/logs/.gitkeep
+*.log
+
+# Docker named volumes data (if any mapped locally)
+.docker-volumes/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Benchmark output
+# We keep .gitkeep so directory exists
+scripts/output/*.json
+scripts/output/*.csv
+scripts/output/*.md
+!scripts/output/.gitkeep
