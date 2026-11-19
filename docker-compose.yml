@@ -1,0 +1,248 @@
+services:
+  # ============================================================================
+  # APACHE KAFKA 3.7.0 (KRaft Mode - Sem ZooKeeper)
+  # ============================================================================
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "4L622nShTUiT8YCdR3wKWw"
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    networks:
+      - tcc-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 || exit 0"]
+      interval: 15s
+      timeout: 25s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================================
+  # KAFKA UI - Console de Gerenciamento e Inspeção
+  # ============================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: tcc-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - tcc-network
+
+  # ============================================================================
+  # BANCOS DE DADOS POSTGRESQL 16 (ISOLADOS POR MICROSSERVIÇO)
+  # ============================================================================
+  origination-db:
+    image: postgres:16-alpine
+    container_name: origination-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: origination_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - origination_db_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-origination.sql:/docker-entrypoint-initdb.d/init-origination.sql:ro
+    networks:
+      - tcc-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d origination_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  debit-db:
+    image: postgres:16-alpine
+    container_name: debit-db
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: debit_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - debit_db_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-debit.sql:/docker-entrypoint-initdb.d/init-debit.sql:ro
+    networks:
+      - tcc-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d debit_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  credit-db:
+    image: postgres:16-alpine
+    container_name: credit-db
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: credit_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - credit_db_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-credit.sql:/docker-entrypoint-initdb.d/init-credit.sql:ro
+    networks:
+      - tcc-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d credit_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # MICROSSERVIÇOS JAVA 21 / SPRING BOOT 3.2
+  # ============================================================================
+  origination-service:
+    build:
+      context: ./origination-service
+      dockerfile: Dockerfile
+    container_name: origination-service
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://origination-db:5432/origination_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      OUTBOX_PUBLISHER_DELAY_MS: "1000"
+    volumes:
+      - ./origination-service/logs:/app/logs
+      - ~/.m2:/root/.m2
+    depends_on:
+      origination-db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - tcc-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8081/actuator/health | grep UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
+
+  debit-service:
+    build:
+      context: ./debit-service
+      dockerfile: Dockerfile
+    container_name: debit-service
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://debit-db:5432/debit_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      OUTBOX_PUBLISHER_DELAY_MS: "1000"
+    volumes:
+      - ./debit-service/logs:/app/logs
+      - ~/.m2:/root/.m2
+    depends_on:
+      debit-db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - tcc-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8082/actuator/health | grep UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
+
+  credit-service:
+    build:
+      context: ./credit-service
+      dockerfile: Dockerfile
+    container_name: credit-service
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://credit-db:5432/credit_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      OUTBOX_PUBLISHER_DELAY_MS: "1000"
+    volumes:
+      - ./credit-service/logs:/app/logs
+      - ~/.m2:/root/.m2
+    depends_on:
+      credit-db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - tcc-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8083/actuator/health | grep UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
+
+  # ============================================================================
+  # RUNNER DO BENCHMARK AUTOMATIZADO (EXECUTÁVEL VIA PROFILE)
+  # ============================================================================
+  benchmark:
+    build:
+      context: .
+      dockerfile: ./scripts/Dockerfile.benchmark
+    container_name: tcc-benchmark
+    profiles:
+      - benchmark
+    environment:
+      ORIGINATION_URL: http://origination-service:8081
+      DEBIT_URL: http://debit-service:8082
+      CREDIT_URL: http://credit-service:8083
+    volumes:
+      - ./scripts/output:/app/output
+    depends_on:
+      - origination-service
+      - debit-service
+      - credit-service
+    networks:
+      - tcc-network
+
+# ==============================================================================
+# VOLUMES NOMEADOS E REDES
+# ==============================================================================
+volumes:
+  kafka_data:
+    name: kafka_data
+  origination_db_data:
+    name: origination_db_data
+  debit_db_data:
+    name: debit_db_data
+  credit_db_data:
+    name: credit_db_data
+
+networks:
+  tcc-network:
+    name: tcc-network
+    driver: bridge
